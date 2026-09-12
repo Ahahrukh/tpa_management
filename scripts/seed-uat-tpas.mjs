@@ -33,6 +33,7 @@ const notWorking = {
 
 const client = await new MongoClient(process.env.MONGODB_URI).connect();
 const collection = client.db(process.env.MONGODB_DB || "tpa_management").collection("tpas");
+await collection.updateMany({}, { $set: { "activeEnvironments.uat": false } });
 
 for (const [name, aliases] of tpas) {
   const normalizedName = normalize(name);
@@ -49,7 +50,7 @@ for (const [name, aliases] of tpas) {
   if (existing) {
     await collection.updateOne(
       { _id: existing._id },
-      { $set: { name, normalizedName, aliases, normalizedAliases, "environments.uat": notWorking, updatedAt: now } },
+      { $set: { aliases, normalizedAliases, "activeEnvironments.uat": true, "environments.uat": notWorking, updatedAt: now } },
     );
   } else {
     await collection.insertOne({
@@ -57,6 +58,7 @@ for (const [name, aliases] of tpas) {
       normalizedName,
       aliases,
       normalizedAliases,
+      activeEnvironments: { uat: true, prod: false },
       environments: { uat: { ...notWorking }, prod: { ...notWorking } },
       createdAt: now,
       updatedAt: now,

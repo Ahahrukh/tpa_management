@@ -7,6 +7,7 @@ export type TpaDocument = {
   normalizedName: string;
   aliases?: string[];
   normalizedAliases?: string[];
+  activeEnvironments?: Partial<Record<EnvironmentKey, boolean>>;
   environments?: Partial<Record<EnvironmentKey, Partial<TpaEnvironment>>>;
   networkHospital?: boolean;
   claimsHistory?: boolean;
@@ -110,6 +111,10 @@ export function toTpa(document: TpaDocument & { _id: ObjectId }): Tpa {
     id: document._id.toHexString(),
     name: document.name,
     aliases: document.aliases ?? [],
+    activeEnvironments: {
+      uat: document.activeEnvironments?.uat ?? true,
+      prod: document.activeEnvironments?.prod ?? true,
+    },
     environments: { uat: environment("uat"), prod: environment("prod") },
     createdAt: document.createdAt.toISOString(),
     updatedAt: document.updatedAt.toISOString(),

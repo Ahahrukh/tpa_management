@@ -39,6 +39,7 @@ export async function POST(request: Request) {
     normalizedName: normalizeTpaName(name),
     aliases: Array.isArray(body.aliases) ? body.aliases.filter((alias): alias is string => typeof alias === "string").map((alias) => alias.trim()).filter(Boolean) : [],
     normalizedAliases: Array.isArray(body.aliases) ? body.aliases.filter((alias): alias is string => typeof alias === "string").map(normalizeTpaName).filter(Boolean) : [],
+    activeEnvironments: body.activeEnvironments ?? { uat: true, prod: true },
     environments: { uat: makeEnvironment("uat"), prod: makeEnvironment("prod") },
     createdAt: now,
     updatedAt: now,

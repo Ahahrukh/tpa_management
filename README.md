@@ -47,6 +47,8 @@ Seed the develop-branch TPA list into UAT without changing existing Production s
 npm run seed:uat
 ```
 
+TPA visibility is environment-specific: the Production seed shows only the 14 Production integrations, while the UAT seed shows only the 16 develop-branch integrations.
+
 ## Login and permissions
 
 The dashboard uses server-enforced login sessions stored in signed, HTTP-only cookies. Passwords are hashed with scrypt before being stored in MongoDB.

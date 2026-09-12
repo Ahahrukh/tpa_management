@@ -18,6 +18,7 @@ export type Tpa = {
   id: string;
   name: string;
   aliases: string[];
+  activeEnvironments: Record<EnvironmentKey, boolean>;
   environments: Record<EnvironmentKey, TpaEnvironment>;
   createdAt: string;
   updatedAt: string;

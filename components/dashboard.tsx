@@ -81,19 +81,20 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   }, []);
 
   const filteredTpas = useMemo(
-    () => tpas.filter((tpa) => tpa.name.toLowerCase().includes(search.toLowerCase())),
-    [search, tpas],
+    () => tpas.filter((tpa) => tpa.activeEnvironments[environment] && tpa.name.toLowerCase().includes(search.toLowerCase())),
+    [environment, search, tpas],
   );
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(filteredTpas.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const paginatedTpas = filteredTpas.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-  const workingCount = tpas.reduce(
+  const environmentTpas = tpas.filter((tpa) => tpa.activeEnvironments[environment]);
+  const workingCount = environmentTpas.reduce(
     (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments[environment][key]).length,
     0,
   );
-  const totalChecks = tpas.reduce(
+  const totalChecks = environmentTpas.reduce(
     (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments[environment][key] !== null).length,
     0,
   );
@@ -291,7 +292,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         <section className="metrics" aria-label="Summary">
           <article className="metric-card">
             <span className="metric-icon blue"><Building2 size={19} /></span>
-            <div><p>Total TPAs</p><strong>{tpas.length}</strong></div>
+            <div><p>Total TPAs</p><strong>{environmentTpas.length}</strong></div>
           </article>
           <article className="metric-card">
             <span className="metric-icon green"><Activity size={19} /></span>
