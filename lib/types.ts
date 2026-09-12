@@ -5,21 +5,47 @@ export const SERVICE_KEYS = [
   "claimIntimation",
   "claimSubmission",
   "activeListEnrollment",
+  "blacklistedHospitals",
 ] as const;
 
 export type ServiceKey = (typeof SERVICE_KEYS)[number];
 
+export type EnvironmentKey = "uat" | "prod";
+export type ServiceValue = boolean | null;
+export type TpaEnvironment = Record<ServiceKey, ServiceValue> & { review: string };
+
 export type Tpa = {
-  id: number;
+  id: string;
   name: string;
-  networkHospital: boolean;
-  claimsHistory: boolean;
-  ecard: boolean;
-  claimIntimation: boolean;
-  claimSubmission: boolean;
-  activeListEnrollment: boolean;
+  aliases: string[];
+  environments: Record<EnvironmentKey, TpaEnvironment>;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ServiceFailure = {
+  id: string;
+  tpaId: string;
+  tpaName: string;
+  serviceName: ServiceKey;
+  environment: EnvironmentKey;
+  reason: string;
+  failedAt: string;
+  reportedAt: string;
+};
+
+export type UserPermissions = {
+  add: boolean;
+  edit: boolean;
+  delete: boolean;
+  export: boolean;
+};
+
+export type AuthUser = {
+  id: string;
+  username: string;
+  role: "admin" | "viewer";
+  permissions: UserPermissions;
 };
 
 export const SERVICES: { key: ServiceKey; label: string; shortLabel: string }[] = [
@@ -29,4 +55,5 @@ export const SERVICES: { key: ServiceKey; label: string; shortLabel: string }[] 
   { key: "claimIntimation", label: "Claim Intimation", shortLabel: "Intimation" },
   { key: "claimSubmission", label: "Claim Submission", shortLabel: "Submission" },
   { key: "activeListEnrollment", label: "Active List / Enrollment", shortLabel: "Enrollment" },
+  { key: "blacklistedHospitals", label: "Blacklisted Hospitals", shortLabel: "Blacklist" },
 ];

@@ -1,54 +1,130 @@
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
-import type { Tpa } from "./types";
+import { Db, MongoClient, ObjectId, type Collection } from "mongodb";
+import type { EnvironmentKey, ServiceFailure, ServiceKey, ServiceValue, Tpa, TpaEnvironment, UserPermissions } from "./types";
 
-const dataDirectory = path.join(process.cwd(), "data");
-fs.mkdirSync(dataDirectory, { recursive: true });
-
-const database = new DatabaseSync(path.join(dataDirectory, "tpa.db"));
-
-database.exec(`
-  CREATE TABLE IF NOT EXISTS tpas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    network_hospital INTEGER NOT NULL DEFAULT 0 CHECK(network_hospital IN (0, 1)),
-    claims_history INTEGER NOT NULL DEFAULT 0 CHECK(claims_history IN (0, 1)),
-    ecard INTEGER NOT NULL DEFAULT 0 CHECK(ecard IN (0, 1)),
-    claim_intimation INTEGER NOT NULL DEFAULT 0 CHECK(claim_intimation IN (0, 1)),
-    claim_submission INTEGER NOT NULL DEFAULT 0 CHECK(claim_submission IN (0, 1)),
-    active_list_enrollment INTEGER NOT NULL DEFAULT 0 CHECK(active_list_enrollment IN (0, 1)),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-type DbRow = {
-  id: number;
+export type TpaDocument = {
+  _id?: ObjectId;
   name: string;
-  network_hospital: number;
-  claims_history: number;
-  ecard: number;
-  claim_intimation: number;
-  claim_submission: number;
-  active_list_enrollment: number;
-  created_at: string;
-  updated_at: string;
+  normalizedName: string;
+  aliases?: string[];
+  normalizedAliases?: string[];
+  environments?: Partial<Record<EnvironmentKey, Partial<TpaEnvironment>>>;
+  networkHospital?: boolean;
+  claimsHistory?: boolean;
+  ecard?: boolean;
+  claimIntimation?: boolean;
+  claimSubmission?: boolean;
+  activeListEnrollment?: boolean;
+  blacklistedHospitals?: boolean | null;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
-export function toTpa(row: DbRow): Tpa {
+export type ServiceEventDocument = {
+  _id?: ObjectId;
+  tpaId: ObjectId;
+  tpaName: string;
+  serviceName: ServiceKey;
+  status: "pass" | "fail";
+  environment: EnvironmentKey;
+  reason?: string;
+  occurredAt: Date;
+  reportedAt: Date;
+};
+
+export type UserDocument = {
+  _id?: ObjectId;
+  username: string;
+  normalizedUsername: string;
+  passwordHash: string;
+  role: "admin" | "viewer";
+  permissions: UserPermissions;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type MongoCache = { uri?: string; client?: MongoClient; connection?: Promise<MongoClient>; initialized?: Promise<void> };
+const globalMongo = globalThis as typeof globalThis & { __tpaMongo?: MongoCache };
+const cache = globalMongo.__tpaMongo ?? (globalMongo.__tpaMongo = {});
+
+async function getClient() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error("MONGODB_URI is not configured.");
+  if (cache.uri !== uri) {
+    cache.uri = uri;
+    cache.client = undefined;
+    cache.connection = undefined;
+    cache.initialized = undefined;
+  }
+  if (cache.client) return cache.client;
+  cache.connection ??= new MongoClient(uri, { maxPoolSize: 10 }).connect();
+  try {
+    cache.client = await cache.connection;
+    return cache.client;
+  } catch (error) {
+    cache.connection = undefined;
+    throw error;
+  }
+}
+
+export async function getDatabase(): Promise<Db> {
+  const database = (await getClient()).db(process.env.MONGODB_DB ?? "tpa_management");
+  cache.initialized ??= Promise.all([
+    database.collection<TpaDocument>("tpas").createIndex({ normalizedName: 1 }, { unique: true }),
+    database.collection<TpaDocument>("tpas").createIndex({ normalizedAliases: 1 }),
+    database.collection<ServiceEventDocument>("serviceEvents").createIndex({ tpaId: 1, occurredAt: -1 }),
+    database.collection<ServiceEventDocument>("serviceEvents").createIndex({ occurredAt: -1 }),
+    database.collection<UserDocument>("users").createIndex({ normalizedUsername: 1 }, { unique: true }),
+  ]).then(() => undefined);
+  await cache.initialized;
+  return database;
+}
+
+export async function getTpaCollection(): Promise<Collection<TpaDocument>> {
+  return (await getDatabase()).collection<TpaDocument>("tpas");
+}
+
+export async function getServiceEventCollection(): Promise<Collection<ServiceEventDocument>> {
+  return (await getDatabase()).collection<ServiceEventDocument>("serviceEvents");
+}
+
+export async function getUserCollection(): Promise<Collection<UserDocument>> {
+  return (await getDatabase()).collection<UserDocument>("users");
+}
+
+export function toTpa(document: TpaDocument & { _id: ObjectId }): Tpa {
+  const legacyValue = (key: ServiceKey): ServiceValue => {
+    const value = document[key];
+    return key === "blacklistedHospitals" && value === undefined ? null : Boolean(value);
+  };
+  const environment = (key: EnvironmentKey): TpaEnvironment => ({
+    networkHospital: document.environments?.[key]?.networkHospital ?? legacyValue("networkHospital"),
+    claimsHistory: document.environments?.[key]?.claimsHistory ?? legacyValue("claimsHistory"),
+    ecard: document.environments?.[key]?.ecard ?? legacyValue("ecard"),
+    claimIntimation: document.environments?.[key]?.claimIntimation ?? legacyValue("claimIntimation"),
+    claimSubmission: document.environments?.[key]?.claimSubmission ?? legacyValue("claimSubmission"),
+    activeListEnrollment: document.environments?.[key]?.activeListEnrollment ?? legacyValue("activeListEnrollment"),
+    blacklistedHospitals: document.environments?.[key]?.blacklistedHospitals ?? legacyValue("blacklistedHospitals"),
+    review: document.environments?.[key]?.review ?? "",
+  });
   return {
-    id: row.id,
-    name: row.name,
-    networkHospital: Boolean(row.network_hospital),
-    claimsHistory: Boolean(row.claims_history),
-    ecard: Boolean(row.ecard),
-    claimIntimation: Boolean(row.claim_intimation),
-    claimSubmission: Boolean(row.claim_submission),
-    activeListEnrollment: Boolean(row.active_list_enrollment),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    id: document._id.toHexString(),
+    name: document.name,
+    aliases: document.aliases ?? [],
+    environments: { uat: environment("uat"), prod: environment("prod") },
+    createdAt: document.createdAt.toISOString(),
+    updatedAt: document.updatedAt.toISOString(),
   };
 }
 
-export default database;
+export function toServiceFailure(document: ServiceEventDocument & { _id: ObjectId }): ServiceFailure {
+  return {
+    id: document._id.toHexString(),
+    tpaId: document.tpaId.toHexString(),
+    tpaName: document.tpaName,
+    serviceName: document.serviceName,
+    environment: document.environment,
+    reason: document.reason ?? "No reason provided",
+    failedAt: document.occurredAt.toISOString(),
+    reportedAt: document.reportedAt.toISOString(),
+  };
+}

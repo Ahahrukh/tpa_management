@@ -6,10 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "seed:tpas": "node --env-file=.env.local scripts/seed-tpas.mjs",
+    "seed:uat": "node --env-file=.env.local scripts/seed-uat-tpas.mjs"
   },
   "dependencies": {
     "lucide-react": "latest",
+    "mongodb": "^7.6.0",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest"
