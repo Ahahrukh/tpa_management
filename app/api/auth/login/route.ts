@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createSessionToken, ensureDefaultUsers, SESSION_COOKIE, toAuthUser, verifyPassword } from "@/lib/auth";
+import { createSessionToken, ensureDefaultUsers, SESSION_COOKIE, SESSION_LENGTH_SECONDS, toAuthUser, verifyPassword } from "@/lib/auth";
 import { getUserCollection } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       sameSite: "strict",
       secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 60 * 60 * 12,
+      maxAge: SESSION_LENGTH_SECONDS,
     });
     return response;
   } catch (error) {

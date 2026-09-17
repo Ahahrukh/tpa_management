@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LockKeyhole, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole, ShieldCheck } from "lucide-react";
 import Dashboard from "./dashboard";
 import type { AuthUser } from "@/lib/types";
 
@@ -9,6 +9,7 @@ export default function AppShell() {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -62,7 +63,7 @@ export default function AppShell() {
         <p className="login-copy">Sign in to view your TPA operations dashboard.</p>
         <form onSubmit={login}>
           <label className="name-field"><span>Username</span><input autoFocus autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-          <label className="name-field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+          <label className="name-field"><span>Password</span><div className="password-field"><input type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
           {error && <div className="error-banner"><span>!</span>{error}</div>}
           <button className="button primary login-button" disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}</button>
         </form>

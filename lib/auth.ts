@@ -6,7 +6,7 @@ import type { AuthUser, UserPermissions } from "./types";
 
 const scrypt = promisify(scryptCallback);
 export const SESSION_COOKIE = "tpa_session";
-const SESSION_LENGTH_SECONDS = 60 * 60 * 12;
+export const SESSION_LENGTH_SECONDS = 60 * 60 * 24 * 24;
 const noPermissions: UserPermissions = { add: false, edit: false, delete: false, export: false };
 const allPermissions: UserPermissions = { add: true, edit: true, delete: true, export: true };
 

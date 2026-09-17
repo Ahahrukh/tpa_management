@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
+  Bell,
   Building2,
   Check,
   CircleMinus,
@@ -18,6 +20,29 @@ import {
 } from "lucide-react";
 import { SERVICES, type AuthUser, type EnvironmentKey, type ServiceKey, type Tpa, type UserPermissions } from "@/lib/types";
 
+const RAHA_BACKEND_URL = process.env.NEXT_PUBLIC_RAHA_BACKEND_URL ?? "https://prodbackend.rahainsure.com";
+
+type TpaRealtimeAlert = {
+  id?: string;
+  _id?: string;
+  tpa_name?: string;
+  service_type?: string;
+  service_label?: string;
+  message?: string;
+  company_name?: string;
+  employee_name?: string;
+  employee_code?: string;
+  policy_number?: string;
+  api_endpoint?: string;
+  request_payload?: unknown;
+  response_payload?: unknown;
+  error_response?: unknown;
+  start_date?: string;
+  end_date?: string;
+  failed_at?: string;
+  createdAt?: string;
+};
+
 const createEmptyServices = () => Object.fromEntries(
   SERVICES.map(({ key }) => [key, key === "blacklistedHospitals" ? null : false]),
 ) as Record<ServiceKey, boolean | null>;
@@ -28,6 +53,8 @@ function escapeCsv(value: string) {
 
 export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [tpas, setTpas] = useState<Tpa[]>([]);
+  const [alerts, setAlerts] = useState<TpaRealtimeAlert[]>([]);
+  const [socketConnected, setSocketConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -77,6 +104,64 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${RAHA_BACKEND_URL}/api/v2/raha_user_master/tpa_failure_alerts?perPage=8`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then((data) => {
+        if (active) setAlerts(Array.isArray(data?.data) ? data.data : []);
+      })
+      .catch(() => undefined);
+
+    let socket: { on: (event: string, callback: (...args: any[]) => void) => void; disconnect: () => void } | undefined;
+    import("socket.io-client")
+      .then(({ io }) => {
+        if (!active) return;
+        socket = io(RAHA_BACKEND_URL, { transports: ["websocket", "polling"] });
+        socket.on("connect", () => setSocketConnected(true));
+        socket.on("disconnect", () => setSocketConnected(false));
+        socket.on("tpa_failure_alert", (alert: TpaRealtimeAlert) => {
+          setAlerts((current) => [alert, ...current].slice(0, 8));
+          setTpas((current) =>
+            current.map((tpa) => {
+              const alertTpaName = alert.tpa_name?.toLowerCase();
+              const matchesTpa = Boolean(
+                alertTpaName &&
+                  (tpa.name.toLowerCase() === alertTpaName ||
+                    tpa.aliases.some((alias) => alias.toLowerCase() === alertTpaName)),
+              );
+              if (!matchesTpa) return tpa;
+              const serviceKey = alert.service_type === "claims_history"
+                ? "claimsHistory"
+                : alert.service_type === "ecard"
+                  ? "ecard"
+                  : alert.service_type === "network_hospitals"
+                    ? "networkHospital"
+                    : alert.service_type === "enrollment_data"
+                      ? "activeListEnrollment"
+                      : alert.service_type === "intimation_api"
+                        ? "claimIntimation"
+                        : null;
+              if (!serviceKey) return tpa;
+              return {
+                ...tpa,
+                environments: {
+                  ...tpa.environments,
+                  prod: { ...tpa.environments.prod, [serviceKey]: false },
+                },
+              };
+            }),
+          );
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+      socket?.disconnect();
     };
   }, []);
 
@@ -267,6 +352,33 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
             <button className={environment === "prod" ? "active" : ""} onClick={() => setEnvironment("prod")}>Production</button>
           </div>
         </div>
+
+        <section className="alert-stream" aria-label="TPA realtime alerts">
+          <div className="alert-stream-head">
+            <div><Bell size={18} /><strong>Realtime TPA alerts</strong><span>{socketConnected ? "Live" : "Connecting"}</span></div>
+            <small>{RAHA_BACKEND_URL}</small>
+          </div>
+          {alerts.length ? (
+            <div className="alert-list">
+              {alerts.map((alert, index) => (
+                <article className="alert-item" key={alert.id ?? alert._id ?? `${alert.tpa_name}-${index}`}>
+                  <span className="alert-icon"><AlertTriangle size={16} /></span>
+                  <div>
+                    <strong>{alert.tpa_name ?? "TPA"} · {alert.service_label ?? alert.service_type ?? "API"}</strong>
+                    <p>{alert.message ?? "TPA API failed"}</p>
+                    <small>
+                      {[alert.company_name, alert.employee_name || alert.employee_code, alert.policy_number, alert.api_endpoint].filter(Boolean).join(" · ")}
+                    </small>
+                    {(alert.start_date || alert.end_date) && <small>{alert.start_date ?? "-"} to {alert.end_date ?? "-"}</small>}
+                  </div>
+                  <time>{new Date(alert.failed_at ?? alert.createdAt ?? Date.now()).toLocaleString("en-IN")}</time>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="alert-empty">No TPA failure alerts yet.</div>
+          )}
+        </section>
 
         {showPermissions && (
           <section className="add-panel permissions-panel">
