@@ -26,15 +26,22 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isAuthorized(request)) return NextResponse.json({ error: "Invalid or missing API key." }, { status: 401, headers: corsHeaders() });
+  // A logged-in tracker administrator may persist statuses received over the
+  // Raha failure socket. The API-key path remains available for server-to-server
+  // TPA monitoring agents.
+  const auth = await authorize(request, "edit");
+  if ("response" in auth && !isAuthorized(request)) {
+    return NextResponse.json({ error: "Invalid or missing API key." }, { status: 401, headers: corsHeaders() });
+  }
   const payload = (await request.json()) as Record<string, unknown>;
   const tpaName = typeof payload.tpaName === "string" ? payload.tpaName.trim() : "";
   const serviceName = typeof payload.serviceName === "string" ? payload.serviceName.trim() : "";
   const reason = typeof payload.reason === "string" ? payload.reason.trim() : "";
   const failedAt = typeof payload.failedAt === "string" ? payload.failedAt : undefined;
+  const recordEvent = payload.recordEvent !== false;
   const environment = parseEnvironment(payload.environment);
   if (!tpaName || !serviceName || !reason || !environment) return NextResponse.json({ error: "tpaName, serviceName, environment, and reason are required." }, { status: 400, headers: corsHeaders() });
-  const result = await setServiceStatus({ tpaName, serviceName, environment, status: "fail", reason, occurredAt: failedAt });
+  const result = await setServiceStatus({ tpaName, serviceName, environment, status: "fail", reason, occurredAt: failedAt, recordEvent });
   if ("error" in result) return NextResponse.json({ error: result.error }, { status: result.statusCode, headers: corsHeaders() });
   return NextResponse.json({ message: `${result.serviceName} marked as not working for ${result.tpa.name}.`, tpa: result.tpa }, { status: 201, headers: corsHeaders() });
 }

@@ -31,7 +31,7 @@ export function parseEnvironment(value: unknown): EnvironmentKey | undefined {
   return normalized === "uat" || normalized === "prod" ? normalized : undefined;
 }
 
-export async function setServiceStatus(input: { tpaName: string; serviceName: string; environment: EnvironmentKey; status: "pass" | "fail"; reason?: string; occurredAt?: string }) {
+export async function setServiceStatus(input: { tpaName: string; serviceName: string; environment: EnvironmentKey; status: "pass" | "fail"; reason?: string; occurredAt?: string; recordEvent?: boolean }) {
   const serviceKey = parseServiceName(input.serviceName);
   if (!serviceKey) return { error: "Unknown serviceName.", statusCode: 400 as const };
   const occurredAt = input.occurredAt ? new Date(input.occurredAt) : new Date();
@@ -39,12 +39,25 @@ export async function setServiceStatus(input: { tpaName: string; serviceName: st
 
   const requestedName = canonicalTpaName(input.tpaName) ?? input.tpaName;
   const normalizedName = normalizeTpaName(requestedName);
-  const updated = await (await getTpaCollection()).findOneAndUpdate(
-    { $or: [{ normalizedName }, { normalizedAliases: normalizedName }] },
-    { $set: { [`environments.${input.environment}.${serviceKey}`]: input.status === "pass", updatedAt: new Date() } },
-    { returnDocument: "after" },
-  );
-  if (!updated) return { error: `TPA '${input.tpaName}' was not found.`, statusCode: 404 as const };
+  const providerFilter = requestedName === "Bajaj Allianz"
+    ? {
+        $or: [
+          { normalizedName },
+          { normalizedAliases: normalizedName },
+          { normalizedName: { $regex: "^bajaj" } },
+          { normalizedAliases: { $regex: "^bajaj" } },
+        ],
+      }
+    : { $or: [{ normalizedName }, { normalizedAliases: normalizedName }] };
+  const collection = await getTpaCollection();
+  const update = { $set: { [`environments.${input.environment}.${serviceKey}`]: input.status === "pass", updatedAt: new Date() } };
+  const updateResult = await collection.updateMany(providerFilter, update);
+  if (!updateResult.matchedCount) return { error: `TPA '${input.tpaName}' was not found.`, statusCode: 404 as const };
+  const updatedTpas = await collection.find(providerFilter).toArray();
+  const updated = updatedTpas.find((tpa) => tpa.normalizedName === normalizedName) ?? updatedTpas[0];
+  if (input.recordEvent === false) {
+    return { serviceName: serviceKey, booleanValue: input.status === "pass", tpa: toTpa(updated), tpas: updatedTpas.map(toTpa) };
+  }
 
   const event = {
     tpaId: updated._id,
@@ -57,7 +70,7 @@ export async function setServiceStatus(input: { tpaName: string; serviceName: st
     reportedAt: new Date(),
   };
   const result = await (await getServiceEventCollection()).insertOne(event);
-  return { eventId: result.insertedId.toHexString(), serviceName: serviceKey, booleanValue: input.status === "pass", tpa: toTpa(updated) };
+  return { eventId: result.insertedId.toHexString(), serviceName: serviceKey, booleanValue: input.status === "pass", tpa: toTpa(updated), tpas: updatedTpas.map(toTpa) };
 }
 
 export function corsHeaders() {

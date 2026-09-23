@@ -15,7 +15,7 @@ export const TPA_SEEDS: TpaSeed[] = [
   { name: "SBI General", aliases: ["SBI", "SBI General Insurance Co. Ltd"] },
   { name: "Aditya Birla Health", aliases: ["ABHI", "Aditya Birla Health Insurance Co. Ltd"] },
   { name: "Reliance / IndusInd", aliases: ["RELIANCE", "Reliance", "Relaince", "Reliance General Insurance", "Reliance General Insurance Co. Ltd", "IndusInd General Health Insurance", "IndusInd General Insurance", "IndusInd", "Induslnd"] },
-  { name: "Bajaj Allianz", aliases: ["BAJAJ", "Bajaj Allianz General Insurance Co. Ltd"] },
+  { name: "Bajaj Allianz", aliases: ["BAJAJ", "Bajaj Allianz", "Bajaj General Insurance Limited", "Bajaj Allianz General Insurance Co. Ltd", "Bajaj Allianz General Insurance Company Limited"] },
   { name: "Vidal Health", aliases: ["VIDAL", "Vidal Health Insurance Co. Ltd"] },
 ];
 
@@ -25,6 +25,8 @@ export function normalizeTpaName(value: string) {
 
 export function canonicalTpaName(value: string) {
   const normalized = normalizeTpaName(value);
+  if (normalized.includes("goodhealth")) return "GHPL";
+  if (normalized.includes("bajaj")) return "Bajaj Allianz";
   if (normalized.includes("carehealth")) return "Care Health";
   if (normalized.includes("reliancegeneralinsurance") || normalized.includes("indusindgeneral") || normalized.includes("induslnd")) return "Reliance / IndusInd";
   const match = TPA_SEEDS.find((tpa) =>
