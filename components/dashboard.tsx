@@ -21,9 +21,10 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { SERVICES, type AuthUser, type EnvironmentKey, type ServiceKey, type Tpa, type UserPermissions } from "@/lib/types";
+import { SERVICES, type AuthUser, type ServiceKey, type Tpa, type UserPermissions } from "@/lib/types";
 
 const RAHA_BACKEND_URL = process.env.NEXT_PUBLIC_RAHA_BACKEND_URL ?? "https://prodbackend.rahainsure.com";
+const ENVIRONMENT = "prod" as const;
 
 type TpaRealtimeAlert = {
   id?: string;
@@ -45,6 +46,22 @@ type TpaRealtimeAlert = {
   end_date?: string;
   failed_at?: string;
   createdAt?: string;
+};
+
+type TrackerEmployee = {
+  _id: string;
+  user_emp_id?: string;
+  user_first_name?: string;
+  user_last_name?: string;
+  user_dob?: string;
+  user_email_id?: string;
+  user_phone_number?: string;
+};
+
+type TrackerPolicy = {
+  _id: string;
+  policy_number?: string;
+  insurer_details?: { tpa_name?: string };
 };
 
 const createEmptyServices = () => Object.fromEntries(
@@ -85,6 +102,42 @@ function getTrackerServiceKey(serviceType?: string): ServiceKey | null {
   }
 }
 
+function normalizeTpaName(value?: string) {
+  return value?.toLowerCase().replace(/[^a-z0-9]/g, "") ?? "";
+}
+
+function getAlertDate(alert: TpaRealtimeAlert) {
+  const value = alert.failed_at ?? alert.createdAt;
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatAlertDate(alert: TpaRealtimeAlert) {
+  const date = getAlertDate(alert);
+  return date ? date.toLocaleString("en-IN") : "Time unavailable";
+}
+
+function toDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getPaginationItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  const pages = [...new Set([1, 2, 3, currentPage - 1, currentPage, currentPage + 1, totalPages - 1, totalPages])]
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b);
+
+  return pages.flatMap((page, index) => {
+    const previous = pages[index - 1];
+    return previous && page - previous > 1 ? [`ellipsis-${previous}`, page] : [page];
+  });
+}
+
 export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [tpas, setTpas] = useState<Tpa[]>([]);
   const [alerts, setAlerts] = useState<TpaRealtimeAlert[]>([]);
@@ -92,10 +145,8 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [environment, setEnvironment] = useState<EnvironmentKey>("prod");
-  const [newEnvironment, setNewEnvironment] = useState<EnvironmentKey>("prod");
-  const [newServices, setNewServices] = useState<Record<EnvironmentKey, Record<ServiceKey, boolean | null>>>(() => ({ uat: createEmptyServices(), prod: createEmptyServices() }));
-  const [newReviews, setNewReviews] = useState<Record<EnvironmentKey, string>>({ uat: "", prod: "" });
+  const [newServices, setNewServices] = useState<Record<ServiceKey, boolean | null>>(createEmptyServices);
+  const [newReview, setNewReview] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
@@ -103,22 +154,32 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   const [showPermissions, setShowPermissions] = useState(false);
   const [managedUsers, setManagedUsers] = useState<AuthUser[]>([]);
   const [selectedTpa, setSelectedTpa] = useState<Tpa | null>(null);
-  const [reviewDrafts, setReviewDrafts] = useState<Record<EnvironmentKey, string>>({ uat: "", prod: "" });
+  const [reviewDraft, setReviewDraft] = useState("");
   const [workspace, setWorkspace] = useState<"services" | "failures" | "corrections" | "reports">("services");
   const [clients, setClients] = useState<{ _id: string; company_name: string }[]>([]);
   const [trackerCompanyId, setTrackerCompanyId] = useState("");
   const [trackerModel, setTrackerModel] = useState("onboarding");
-  const [trackerEmployees, setTrackerEmployees] = useState<Record<string, any>[]>([]);
+  const [trackerEmployees, setTrackerEmployees] = useState<TrackerEmployee[]>([]);
   const [trackerEmployeeId, setTrackerEmployeeId] = useState("");
+  const [employeeSearch, setEmployeeSearch] = useState("");
   const [correctionField, setCorrectionField] = useState("email");
   const [correctionValue, setCorrectionValue] = useState("");
-  const [trackerPolicies, setTrackerPolicies] = useState<Record<string, any>[]>([]);
+  const [trackerPolicies, setTrackerPolicies] = useState<TrackerPolicy[]>([]);
   const [reportPolicyId, setReportPolicyId] = useState("");
+  const [policySearch, setPolicySearch] = useState("");
   const [reportSource, setReportSource] = useState("database");
   const [showCorrectionConfirmation, setShowCorrectionConfirmation] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<TpaRealtimeAlert | null>(null);
   const [failurePage, setFailurePage] = useState(1);
   const [alertPage, setAlertPage] = useState(1);
+  const [failureTpa, setFailureTpa] = useState("");
+  const [failureDateMode, setFailureDateMode] = useState<"recent" | "custom">("recent");
+  const [failureStartDate, setFailureStartDate] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 2);
+    return toDateInputValue(date);
+  });
+  const [failureEndDate, setFailureEndDate] = useState(() => toDateInputValue(new Date()));
 
   async function persistFailureStatus(alert: TpaRealtimeAlert) {
     const serviceKey = getTrackerServiceKey(alert.service_type);
@@ -179,37 +240,93 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   }, []);
 
   useEffect(() => {
-    if (!trackerCompanyId) { setTrackerPolicies([]); setTrackerEmployees([]); return; }
-    fetch(`/api/tracker/clients/${trackerCompanyId}/policies`, { cache: "no-store" })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.message || data?.error || "Could not load policies.");
-        return data;
-      })
-      .then((data) => setTrackerPolicies(Array.isArray(data?.data) ? data.data : []))
-      .catch(() => undefined);
-    if (workspace === "corrections") {
-      fetch(`/api/tracker/employees?company_id=${trackerCompanyId}&model=${trackerModel}`, { cache: "no-store" })
+    if (!trackerCompanyId || workspace !== "reports") return;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({ q: policySearch, limit: "300" });
+      fetch(`/api/tracker/clients/${trackerCompanyId}/policies?${params}`, { cache: "no-store" })
+        .then(async (response) => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data?.message || data?.error || "Could not load policies.");
+          return data;
+        })
+        .then((data) => setTrackerPolicies(Array.isArray(data?.data) ? data.data : []))
+        .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not load policies."));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [policySearch, trackerCompanyId, workspace]);
+
+  useEffect(() => {
+    if (!trackerCompanyId || workspace !== "corrections") return;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({ company_id: trackerCompanyId, model: trackerModel, q: employeeSearch, limit: "200" });
+      fetch(`/api/tracker/employees?${params}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() : Promise.reject())
         .then((data) => { setTrackerEmployees(Array.isArray(data?.data) ? data.data : []); setTrackerEmployeeId(""); })
         .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not load employees."));
-    }
-  }, [trackerCompanyId, trackerModel, workspace]);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [employeeSearch, trackerCompanyId, trackerModel, workspace]);
 
   const selectedTrackerEmployee = trackerEmployees.find((employee) => `${employee._id}` === trackerEmployeeId);
   const selectedReportPolicy = trackerPolicies.find((policy) => `${policy._id}` === reportPolicyId);
-  const failurePageSize = 8;
-  const totalFailurePages = Math.max(1, Math.ceil(alerts.length / failurePageSize));
-  const visibleFailures = alerts.slice((Math.min(failurePage, totalFailurePages) - 1) * failurePageSize, Math.min(failurePage, totalFailurePages) * failurePageSize);
-  const alertPageSize = 10;
-  const alertTotalPages = Math.max(1, Math.ceil(alerts.length / alertPageSize));
-  const visibleStreamAlerts = alerts.slice(
+  const failureTpaOptions = useMemo(() => {
+    const names = new Set(tpas.map((tpa) => tpa.name));
+    alerts.forEach((alert) => {
+      const alertName = alert.tpa_name?.trim();
+      if (!alertName) return;
+      const normalizedAlertName = normalizeTpaName(alertName);
+      const alreadyRepresented = tpas.some((tpa) =>
+        [tpa.name, ...tpa.aliases].some((name) => normalizeTpaName(name) === normalizedAlertName),
+      );
+      if (!alreadyRepresented) names.add(alertName);
+    });
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [alerts, tpas]);
+
+  const filteredAlerts = useMemo(() => {
+    if (!failureTpa) return [];
+    const selectedTpa = tpas.find((tpa) => tpa.name === failureTpa);
+    const acceptedNames = new Set(
+      (selectedTpa ? [selectedTpa.name, ...selectedTpa.aliases] : [failureTpa]).map(normalizeTpaName),
+    );
+    const now = new Date();
+    const recentStart = new Date(now);
+    recentStart.setHours(0, 0, 0, 0);
+    recentStart.setDate(recentStart.getDate() - 2);
+    const customStart = failureStartDate ? new Date(`${failureStartDate}T00:00:00`) : null;
+    const customEnd = failureEndDate ? new Date(`${failureEndDate}T23:59:59.999`) : null;
+
+    return alerts.filter((alert) => {
+      if (!acceptedNames.has(normalizeTpaName(alert.tpa_name))) return false;
+      const occurredAt = getAlertDate(alert);
+      if (!occurredAt) return false;
+      if (failureDateMode === "recent") return occurredAt >= recentStart && occurredAt <= now;
+      if (!customStart || !customEnd || customStart > customEnd) return false;
+      return occurredAt >= customStart && occurredAt <= customEnd;
+    });
+  }, [alerts, failureDateMode, failureEndDate, failureStartDate, failureTpa, tpas]);
+
+  const failurePageSize = 5;
+  const totalFailurePages = Math.max(1, Math.ceil(filteredAlerts.length / failurePageSize));
+  const visibleFailures = filteredAlerts.slice((Math.min(failurePage, totalFailurePages) - 1) * failurePageSize, Math.min(failurePage, totalFailurePages) * failurePageSize);
+  const alertPageSize = 5;
+  const alertTotalPages = Math.max(1, Math.ceil(filteredAlerts.length / alertPageSize));
+  const visibleStreamAlerts = filteredAlerts.slice(
     (Math.min(alertPage, alertTotalPages) - 1) * alertPageSize,
     Math.min(alertPage, alertTotalPages) * alertPageSize,
   );
+  const invalidFailureDateRange = failureDateMode === "custom" && Boolean(failureStartDate && failureEndDate && failureStartDate > failureEndDate);
+
+  function resetFailurePages() {
+    setFailurePage(1);
+    setAlertPage(1);
+  }
+
   useEffect(() => {
     if (!selectedTrackerEmployee) return;
-    const fieldMap: Record<string, string> = { employee_code: "user_emp_id", name: "user_first_name", dob: "user_dob", email: "user_email_id", mobile: "user_phone_number" };
+    const fieldMap: Record<string, keyof TrackerEmployee> = { employee_code: "user_emp_id", name: "user_first_name", dob: "user_dob", email: "user_email_id", mobile: "user_phone_number" };
+    // Keep the editable value synchronized with the selected employee field.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCorrectionValue(`${selectedTrackerEmployee[fieldMap[correctionField]] ?? ""}`);
   }, [selectedTrackerEmployee, correctionField]);
 
@@ -247,11 +364,12 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
       })
       .catch(() => undefined);
 
-    let socket: { on: (event: string, callback: (...args: any[]) => void) => void; disconnect: () => void } | undefined;
+    let disconnectSocket: (() => void) | undefined;
     import("socket.io-client")
       .then(({ io }) => {
         if (!active) return;
-        socket = io(RAHA_BACKEND_URL, { transports: ["websocket", "polling"] });
+        const socket = io(RAHA_BACKEND_URL, { transports: ["websocket", "polling"] });
+        disconnectSocket = () => socket.disconnect();
         socket.on("connect", () => setSocketConnected(true));
         socket.on("disconnect", () => setSocketConnected(false));
     socket.on("tpa_failure_alert", (alert: TpaRealtimeAlert) => {
@@ -290,26 +408,26 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
 
     return () => {
       active = false;
-      socket?.disconnect();
+      disconnectSocket?.();
     };
   }, []);
 
   const filteredTpas = useMemo(
-    () => tpas.filter((tpa) => tpa.activeEnvironments[environment] && tpa.name.toLowerCase().includes(search.toLowerCase())),
-    [environment, search, tpas],
+    () => tpas.filter((tpa) => tpa.activeEnvironments.prod && tpa.name.toLowerCase().includes(search.toLowerCase())),
+    [search, tpas],
   );
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(filteredTpas.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const paginatedTpas = filteredTpas.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-  const environmentTpas = tpas.filter((tpa) => tpa.activeEnvironments[environment]);
+  const environmentTpas = tpas.filter((tpa) => tpa.activeEnvironments.prod);
   const workingCount = environmentTpas.reduce(
-    (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments[environment][key]).length,
+    (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments.prod[key]).length,
     0,
   );
   const totalChecks = environmentTpas.reduce(
-    (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments[environment][key] !== null).length,
+    (total, tpa) => total + SERVICES.filter(({ key }) => tpa.environments.prod[key] !== null).length,
     0,
   );
   const readiness = totalChecks ? Math.round((workingCount / totalChecks) * 100) : 0;
@@ -325,9 +443,9 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
+          activeEnvironments: { uat: false, prod: true },
           environments: {
-            uat: { ...newServices.uat, review: newReviews.uat },
-            prod: { ...newServices.prod, review: newReviews.prod },
+            prod: { ...newServices, review: newReview },
           },
         }),
       });
@@ -335,8 +453,8 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
       if (!response.ok) throw new Error(data.error ?? "Could not add TPA.");
       setTpas((current) => [...current, data].sort((a, b) => a.name.localeCompare(b.name)));
       setName("");
-      setNewServices({ uat: createEmptyServices(), prod: createEmptyServices() });
-      setNewReviews({ uat: "", prod: "" });
+      setNewServices(createEmptyServices());
+      setNewReview("");
       setShowForm(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add TPA.");
@@ -345,7 +463,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
 
   async function toggleService(tpa: Tpa, field: ServiceKey) {
     const key = `${tpa.id}-${field}`;
-    const originalValue = tpa.environments[environment][field];
+    const originalValue = tpa.environments.prod[field];
     const nextValue = field === "blacklistedHospitals"
       ? originalValue === null
         ? true
@@ -355,19 +473,19 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
       : !originalValue;
     setSavingKey(key);
     setError("");
-    setTpas((current) => current.map((item) => item.id === tpa.id ? { ...item, environments: { ...item.environments, [environment]: { ...item.environments[environment], [field]: nextValue } } } : item));
+    setTpas((current) => current.map((item) => item.id === tpa.id ? { ...item, environments: { ...item.environments, prod: { ...item.environments.prod, [field]: nextValue } } } : item));
 
     try {
       const response = await fetch(`/api/tpas/${tpa.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ field, value: nextValue, environment }),
+        body: JSON.stringify({ field, value: nextValue, environment: ENVIRONMENT }),
       });
       if (!response.ok) throw new Error("Could not save this change.");
       const updated = await response.json();
       setTpas((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (caught) {
-      setTpas((current) => current.map((item) => item.id === tpa.id ? { ...item, environments: { ...item.environments, [environment]: { ...item.environments[environment], [field]: originalValue } } } : item));
+      setTpas((current) => current.map((item) => item.id === tpa.id ? { ...item, environments: { ...item.environments, prod: { ...item.environments.prod, [field]: originalValue } } } : item));
       setError(caught instanceof Error ? caught.message : "Could not save this change.");
     } finally {
       setSavingKey(null);
@@ -384,12 +502,12 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
 
   function exportCsv() {
     const headers = ["TPA Name", "Environment", ...SERVICES.map(({ label }) => label), "Review"];
-    const rows = tpas.flatMap((tpa) => (["uat", "prod"] as EnvironmentKey[]).map((env) => [
+    const rows = tpas.filter((tpa) => tpa.activeEnvironments.prod).map((tpa) => [
       tpa.name,
-      env.toUpperCase(),
-      ...SERVICES.map(({ key }) => (tpa.environments[env][key] === null ? "Not tracked" : tpa.environments[env][key] ? "Working" : "Not working")),
-      tpa.environments[env].review,
-    ]));
+      "PRODUCTION",
+      ...SERVICES.map(({ key }) => (tpa.environments.prod[key] === null ? "Not tracked" : tpa.environments.prod[key] ? "Working" : "Not working")),
+      tpa.environments.prod.review,
+    ]);
     const csv = [headers, ...rows].map((row) => row.map((cell) => escapeCsv(cell)).join(",")).join("\n");
     const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
@@ -426,15 +544,15 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
 
   function openDetails(tpa: Tpa) {
     setSelectedTpa(tpa);
-    setReviewDrafts({ uat: tpa.environments.uat.review, prod: tpa.environments.prod.review });
+    setReviewDraft(tpa.environments.prod.review);
   }
 
-  async function saveReview(env: EnvironmentKey) {
+  async function saveReview() {
     if (!selectedTpa || !user.permissions.edit) return;
     const response = await fetch(`/api/tpas/${selectedTpa.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ environment: env, review: reviewDrafts[env] }),
+      body: JSON.stringify({ environment: ENVIRONMENT, review: reviewDraft }),
     });
     const data = await response.json();
     if (response.ok) {
@@ -448,7 +566,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     const response = await fetch(`/api/tracker/employees/${trackerEmployeeId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: trackerModel, field: correctionField, value: correctionValue, confirmed: true }),
+      body: JSON.stringify({ company_id: trackerCompanyId, model: trackerModel, field: correctionField, value: correctionValue, confirmed: true }),
     });
     const data = await response.json();
     if (!response.ok) return setError(data.message ?? "Employee update failed.");
@@ -458,7 +576,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   }
 
   async function downloadClaimsReport() {
-    if (!trackerCompanyId || !reportPolicyId) return setError("Select a client and policy first.");
+    if (!trackerCompanyId || !reportPolicyId) return setError("Select a company and policy first.");
     const response = await fetch(`/api/tracker/claims_report?company_id=${trackerCompanyId}&policy_id=${reportPolicyId}&source=${reportSource}`);
     if (!response.ok) { const data = await response.json().catch(() => ({})); return setError(data.message ?? "Could not generate claims report."); }
     const blob = await response.blob();
@@ -467,6 +585,66 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     link.download = response.headers.get("content-disposition")?.match(/filename=([^;]+)/)?.[1] ?? "raha-claims-report.csv";
     link.click();
     URL.revokeObjectURL(link.href);
+  }
+
+  function renderFailureFilters() {
+    return (
+      <div className="failure-filters">
+        <label className="failure-filter-field">
+          <span>TPA</span>
+          <select value={failureTpa} onChange={(event) => { setFailureTpa(event.target.value); resetFailurePages(); }}>
+            <option value="">Select a TPA</option>
+            {failureTpaOptions.map((tpaName) => <option key={tpaName} value={tpaName}>{tpaName}</option>)}
+          </select>
+        </label>
+        <div className="failure-filter-field">
+          <span>Date range</span>
+          <div className="date-range-switch" role="group" aria-label="Failure log date range">
+            <button type="button" className={failureDateMode === "recent" ? "active" : ""} onClick={() => { setFailureDateMode("recent"); resetFailurePages(); }}>Recent 3 days</button>
+            <button type="button" className={failureDateMode === "custom" ? "active" : ""} onClick={() => { setFailureDateMode("custom"); resetFailurePages(); }}>Custom range</button>
+          </div>
+        </div>
+        {failureDateMode === "custom" && (
+          <>
+            <label className="failure-filter-field">
+              <span>From</span>
+              <input type="date" value={failureStartDate} max={failureEndDate || undefined} onChange={(event) => { setFailureStartDate(event.target.value); resetFailurePages(); }} />
+            </label>
+            <label className="failure-filter-field">
+              <span>To</span>
+              <input type="date" value={failureEndDate} min={failureStartDate || undefined} onChange={(event) => { setFailureEndDate(event.target.value); resetFailurePages(); }} />
+            </label>
+          </>
+        )}
+        <p className="failure-filter-summary">
+          {!failureTpa
+            ? "Select a TPA to view its logs."
+            : invalidFailureDateRange
+              ? "The From date must be before the To date."
+              : `${filteredAlerts.length} log${filteredAlerts.length === 1 ? "" : "s"} for ${failureTpa}`}
+        </p>
+      </div>
+    );
+  }
+
+  function renderNumberedPagination(currentPage: number, totalPages: number, selectPage: (page: number) => void) {
+    return (
+      <div className="pagination-numbers">
+        {getPaginationItems(currentPage, totalPages).map((item) =>
+          typeof item === "number" ? (
+            <button
+              key={item}
+              className={currentPage === item ? "active" : ""}
+              onClick={() => selectPage(item)}
+              aria-label={`Page ${item}`}
+              aria-current={currentPage === item ? "page" : undefined}
+            >
+              {item}
+            </button>
+          ) : <span className="pagination-ellipsis" key={item} aria-hidden="true">…</span>,
+        )}
+      </div>
+    );
   }
 
   return (
@@ -514,11 +692,8 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         </section>
 
         <div className="environment-bar">
-          <div><strong>Environment</strong><span>Statuses and readiness are shown separately.</span></div>
-          <div className="environment-switch" role="group" aria-label="Environment">
-            <button className={environment === "uat" ? "active" : ""} onClick={() => setEnvironment("uat")}>UAT</button>
-            <button className={environment === "prod" ? "active" : ""} onClick={() => setEnvironment("prod")}>Production</button>
-          </div>
+          <div><strong>Environment</strong><span>Only production statuses and readiness are shown.</span></div>
+          <span className="production-pill">Production</span>
         </div>
 
         <section className="alert-stream" aria-label="TPA realtime alerts">
@@ -526,7 +701,8 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
             <div><Bell size={18} /><strong>Realtime TPA alerts</strong><span>{socketConnected ? "Live" : "Connecting"}</span></div>
             <small>{RAHA_BACKEND_URL}</small>
           </div>
-          {alerts.length ? (
+          {renderFailureFilters()}
+          {filteredAlerts.length ? (
             <div className="alert-list">
               {visibleStreamAlerts.map((alert, index) => (
                 <article className="alert-item" key={alert.id ?? alert._id ?? `${alert.tpa_name}-${index}`}>
@@ -539,14 +715,14 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
                     </small>
                     {(alert.start_date || alert.end_date) && <small>{alert.start_date ?? "-"} to {alert.end_date ?? "-"}</small>}
                   </div>
-                  <time>{new Date(alert.failed_at ?? alert.createdAt ?? Date.now()).toLocaleString("en-IN")}</time>
+                  <time>{formatAlertDate(alert)}</time>
                 </article>
               ))}
             </div>
           ) : (
-            <div className="alert-empty">No TPA failure alerts yet.</div>
+            <div className="alert-empty">{!failureTpa ? "Select a TPA to view its recent logs." : invalidFailureDateRange ? "Choose a valid date range." : "No failure logs found for this TPA and date range."}</div>
           )}
-          {alerts.length > alertPageSize && <nav className="pagination alert-pagination" aria-label="Realtime alert pagination"><p>Showing {(Math.min(alertPage, alertTotalPages) - 1) * alertPageSize + 1}–{Math.min(Math.min(alertPage, alertTotalPages) * alertPageSize, alerts.length)} of {alerts.length} alerts</p><div><button disabled={alertPage === 1} onClick={() => setAlertPage((value) => Math.max(1, value - 1))}>Previous</button><button disabled={alertPage === alertTotalPages} onClick={() => setAlertPage((value) => Math.min(alertTotalPages, value + 1))}>Next</button></div></nav>}
+          {filteredAlerts.length > alertPageSize && <nav className="pagination alert-pagination" aria-label="Realtime alert pagination"><p>Showing {(Math.min(alertPage, alertTotalPages) - 1) * alertPageSize + 1}–{Math.min(Math.min(alertPage, alertTotalPages) * alertPageSize, filteredAlerts.length)} of {filteredAlerts.length} alerts</p>{renderNumberedPagination(alertPage, alertTotalPages, setAlertPage)}</nav>}
         </section>
 
         {showPermissions && (
@@ -593,41 +769,32 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
             </div>
             <form onSubmit={addTpa}>
               <label className="name-field"><span>TPA name</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. FHPL" /></label>
-              <div className="form-environment-row">
-                <span>Configure environment</span>
-                <div className="environment-switch compact">
-                  <button type="button" className={newEnvironment === "uat" ? "active" : ""} onClick={() => setNewEnvironment("uat")}>UAT</button>
-                  <button type="button" className={newEnvironment === "prod" ? "active" : ""} onClick={() => setNewEnvironment("prod")}>Production</button>
-                </div>
-              </div>
+              <div className="form-environment-row"><span>Production services</span></div>
               <div className="service-picker">
                 {SERVICES.map(({ key, label }) => (
                   <button
                     key={key}
                     type="button"
-                    className={newServices[newEnvironment][key] ? "service-option selected" : newServices[newEnvironment][key] === null ? "service-option untracked" : "service-option"}
+                    className={newServices[key] ? "service-option selected" : newServices[key] === null ? "service-option untracked" : "service-option"}
                     onClick={() => setNewServices((current) => ({
                       ...current,
-                      [newEnvironment]: {
-                        ...current[newEnvironment],
-                        [key]: key === "blacklistedHospitals"
-                          ? current[newEnvironment][key] === null ? true : current[newEnvironment][key] === true ? false : null
-                          : !current[newEnvironment][key],
-                      },
+                      [key]: key === "blacklistedHospitals"
+                        ? current[key] === null ? true : current[key] === true ? false : null
+                        : !current[key],
                     }))}
                   >
-                    <span>{newServices[newEnvironment][key] === null ? <CircleMinus size={15} /> : newServices[newEnvironment][key] ? <Check size={15} /> : <X size={15} />}</span>
-                    <span className="option-copy">{label}{key === "blacklistedHospitals" && <small>{newServices[newEnvironment][key] === null ? "Optional · not tracked" : newServices[newEnvironment][key] ? "Working" : "Not working"}</small>}</span>
+                    <span>{newServices[key] === null ? <CircleMinus size={15} /> : newServices[key] ? <Check size={15} /> : <X size={15} />}</span>
+                    <span className="option-copy">{label}{key === "blacklistedHospitals" && <small>{newServices[key] === null ? "Optional · not tracked" : newServices[key] ? "Working" : "Not working"}</small>}</span>
                   </button>
                 ))}
               </div>
-              <label className="review-field"><span>{newEnvironment.toUpperCase()} review</span><textarea value={newReviews[newEnvironment]} onChange={(event) => setNewReviews((current) => ({ ...current, [newEnvironment]: event.target.value }))} placeholder="Add an optional environment review…" /></label>
+              <label className="review-field"><span>Production review</span><textarea value={newReview} onChange={(event) => setNewReview(event.target.value)} placeholder="Add an optional production review…" /></label>
               <div className="form-actions"><button type="button" className="button ghost" onClick={() => setShowForm(false)}>Cancel</button><button className="button primary" type="submit"><Plus size={17} /> Add TPA</button></div>
             </form>
           </section>
         )}
 
-        {error && <div className="error-banner"><X size={16} /> {error}</div>}
+        {error && !/unauthori[sz]ed|authentication required|permission/i.test(error) && <div className="error-banner"><X size={16} /> {error}</div>}
 
         <section className="table-card">
           <div className="table-toolbar">
@@ -643,13 +810,13 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
                 <thead><tr><th>TPA name</th>{SERVICES.map(({ key, label, shortLabel }) => <th key={key}><span className="wide-label">{label}</span><span className="short-label">{shortLabel}</span></th>)}<th>Details</th><th aria-label="Actions" /></tr></thead>
                 <tbody>
                   {paginatedTpas.map((tpa) => {
-                    const tracked = SERVICES.filter(({ key }) => tpa.environments[environment][key] !== null).length;
-                    const active = SERVICES.filter(({ key }) => tpa.environments[environment][key] === true).length;
+                    const tracked = SERVICES.filter(({ key }) => tpa.environments.prod[key] !== null).length;
+                    const active = SERVICES.filter(({ key }) => tpa.environments.prod[key] === true).length;
                     return (
                       <tr key={tpa.id}>
                         <td><div className="tpa-name"><span>{tpa.name.slice(0, 2).toUpperCase()}</span><div><strong>{tpa.name}</strong><small>{active} of {tracked} tracked services</small></div></div></td>
                         {SERVICES.map(({ key, label }) => {
-                          const working = tpa.environments[environment][key];
+                          const working = tpa.environments.prod[key];
                           const stateLabel = working === null ? "not tracked" : working ? "working" : "not working";
                           const nextLabel = working === null ? "start tracking" : working ? "mark not working" : key === "blacklistedHospitals" ? "stop tracking" : "mark working";
                           return <td key={key}><button disabled={!user.permissions.edit || savingKey === `${tpa.id}-${key}`} onClick={() => toggleService(tpa, key)} className={working === null ? "status untracked" : working ? "status working" : "status offline"} aria-label={`${label}: ${stateLabel}`} title={user.permissions.edit ? nextLabel : stateLabel}>{working === null ? <CircleMinus size={17} strokeWidth={2.5} /> : working ? <Check size={17} strokeWidth={3} /> : <X size={17} strokeWidth={3} />}</button></td>;
@@ -687,11 +854,41 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         <footer><span><i className="legend-dot green-dot" /> Working</span><span><i className="legend-dot red-dot" /> Not working</span><span><i className="legend-dot gray-dot" /> Not tracked</span><p>Changes are saved automatically</p></footer>
         </div>}
 
-        {workspace === "failures" && <section className="page-shell workspace-panel"><div className="workspace-heading"><p className="eyebrow">Live operations</p><h1>TPA failures</h1><p>Every traced TPA failure is stored in Raha and arrives here through the socket stream.</p></div><section className="failure-table"><div className="failure-table-head"><div><strong>{alerts.length}</strong><span>events captured</span></div><span className={socketConnected ? "live-pill connected" : "live-pill"}>{socketConnected ? "Live socket" : "Connecting"}</span></div>{alerts.length ? <><div className="failure-table-scroll"><table><thead><tr><th>TPA</th><th>Service</th><th>Failure</th><th>Endpoint</th><th>Occurred</th><th /></tr></thead><tbody>{visibleFailures.map((alert, index) => <tr key={alert.id ?? alert._id ?? `${alert.tpa_name}-${index}`}><td><strong>{alert.tpa_name ?? "TPA"}</strong></td><td><span className="service-chip">{alert.service_label ?? alert.service_type ?? "API"}</span></td><td className="failure-message">{alert.message ?? "TPA API failed"}</td><td className="endpoint-cell" title={alert.api_endpoint}>{alert.api_endpoint || "-"}</td><td>{new Date(alert.failed_at ?? alert.createdAt ?? Date.now()).toLocaleString("en-IN")}</td><td><button className="details-button" onClick={() => setSelectedAlert(alert)}><Eye size={15} /> Inspect</button></td></tr>)}</tbody></table></div><nav className="pagination"><p>Showing {(Math.min(failurePage, totalFailurePages) - 1) * failurePageSize + 1}–{Math.min(Math.min(failurePage, totalFailurePages) * failurePageSize, alerts.length)} of {alerts.length}</p><div><button disabled={failurePage === 1} onClick={() => setFailurePage((page) => Math.max(1, page - 1))}>Previous</button><button disabled={failurePage === totalFailurePages} onClick={() => setFailurePage((page) => Math.min(totalFailurePages, page + 1))}>Next</button></div></nav></> : <div className="alert-empty">No TPA failures have been recorded.</div>}</section></section>}
+        {workspace === "failures" && <section className="page-shell workspace-panel"><div className="workspace-heading"><p className="eyebrow">Live operations</p><h1>TPA failures</h1><p>Select a TPA to see its most recent three days of logs, or choose a custom date range.</p></div>{renderFailureFilters()}<section className="failure-table"><div className="failure-table-head"><div><strong>{filteredAlerts.length}</strong><span>matching events</span></div><span className={socketConnected ? "live-pill connected" : "live-pill"}>{socketConnected ? "Live socket" : "Connecting"}</span></div>{filteredAlerts.length ? <><div className="failure-table-scroll"><table><thead><tr><th>TPA</th><th>Service</th><th>Failure</th><th>Endpoint</th><th>Occurred</th><th /></tr></thead><tbody>{visibleFailures.map((alert, index) => <tr key={alert.id ?? alert._id ?? `${alert.tpa_name}-${index}`}><td><strong>{alert.tpa_name ?? "TPA"}</strong></td><td><span className="service-chip">{alert.service_label ?? alert.service_type ?? "API"}</span></td><td className="failure-message">{alert.message ?? "TPA API failed"}</td><td className="endpoint-cell" title={alert.api_endpoint}>{alert.api_endpoint || "-"}</td><td>{formatAlertDate(alert)}</td><td><button className="details-button" onClick={() => setSelectedAlert(alert)}><Eye size={15} /> Inspect</button></td></tr>)}</tbody></table></div><nav className="pagination"><p>Showing {(Math.min(failurePage, totalFailurePages) - 1) * failurePageSize + 1}–{Math.min(Math.min(failurePage, totalFailurePages) * failurePageSize, filteredAlerts.length)} of {filteredAlerts.length}</p>{renderNumberedPagination(failurePage, totalFailurePages, setFailurePage)}</nav></> : <div className="alert-empty">{!failureTpa ? "Select a TPA to view its recent logs." : invalidFailureDateRange ? "Choose a valid date range." : "No failure logs found for this TPA and date range."}</div>}</section></section>}
 
-        {workspace === "corrections" && <section className="page-shell workspace-panel"><div className="workspace-heading"><p className="eyebrow">Controlled correction</p><h1>Edit employee data</h1><p>Select a client, employee data model, and one permitted field. Every confirmed update is audit logged.</p></div><section className="add-panel tracker-form"><div className="form-grid"><label className="name-field"><span>Role</span><input value="Employee" disabled /></label><label className="name-field"><span>Model</span><select value={trackerModel} onChange={(event) => setTrackerModel(event.target.value)}><option value="onboarding">Onboarding</option><option value="pre_enrollment">Pre enrollment</option></select></label><label className="name-field"><span>Client</span><select value={trackerCompanyId} onChange={(event) => setTrackerCompanyId(event.target.value)}><option value="">Select client</option>{clients.map((client) => <option key={client._id} value={client._id}>{client.company_name}</option>)}</select></label><label className="name-field"><span>Employee</span><select disabled={!trackerCompanyId} value={trackerEmployeeId} onChange={(event) => setTrackerEmployeeId(event.target.value)}><option value="">Select employee</option>{trackerEmployees.map((employee) => <option key={employee._id} value={employee._id}>{employee.user_first_name} {employee.user_last_name || ""} ({employee.user_emp_id || "No code"})</option>)}</select></label><label className="name-field"><span>Change</span><select value={correctionField} onChange={(event) => setCorrectionField(event.target.value)}><option value="employee_code">Employee code</option><option value="name">Name</option><option value="dob">DOB</option><option value="email">Email</option><option value="mobile">Mobile</option></select></label><label className="name-field"><span>New value</span><input type={correctionField === "dob" ? "date" : "text"} disabled={!trackerEmployeeId} value={correctionValue} onChange={(event) => setCorrectionValue(event.target.value)} /></label></div><div className="form-actions"><button className="button primary" disabled={!trackerEmployeeId || !correctionValue.trim()} onClick={() => setShowCorrectionConfirmation(true)}><Users size={17} />Review and update</button></div></section></section>}
+        {workspace === "corrections" && (
+          <section className="page-shell workspace-panel">
+            <div className="workspace-heading"><p className="eyebrow">Controlled correction</p><h1>Edit employee data</h1><p>Select a company, employee data model, and one permitted field. Every confirmed update is audit logged.</p></div>
+            <section className="add-panel tracker-form">
+              <div className="form-grid">
+                <label className="name-field"><span>Role</span><input value="Employee" disabled /></label>
+                <label className="name-field"><span>Model</span><select value={trackerModel} onChange={(event) => { setTrackerModel(event.target.value); setTrackerEmployeeId(""); setEmployeeSearch(""); }}><option value="onboarding">Onboarding</option><option value="pre_enrollment">Pre enrollment</option></select></label>
+                <label className="name-field form-span"><span>Company</span><select value={trackerCompanyId} onChange={(event) => { setTrackerCompanyId(event.target.value); setTrackerEmployeeId(""); setEmployeeSearch(""); }}><option value="">Select company</option>{clients.map((client) => <option key={client._id} value={client._id}>{client.company_name}</option>)}</select></label>
+                <label className="name-field"><span>Search employee</span><input disabled={!trackerCompanyId} value={employeeSearch} onChange={(event) => setEmployeeSearch(event.target.value)} placeholder="Name, employee code, or email" /></label>
+                <label className="name-field"><span>Employee</span><select disabled={!trackerCompanyId} value={trackerEmployeeId} onChange={(event) => setTrackerEmployeeId(event.target.value)}><option value="">Select employee</option>{trackerEmployees.map((employee) => <option key={employee._id} value={employee._id}>{employee.user_first_name} {employee.user_last_name || ""} ({employee.user_emp_id || "No code"})</option>)}</select></label>
+                <label className="name-field"><span>Change</span><select value={correctionField} onChange={(event) => setCorrectionField(event.target.value)}><option value="employee_code">Employee code</option><option value="name">Name</option><option value="dob">DOB</option><option value="email">Email</option><option value="mobile">Mobile</option></select></label>
+                <label className="name-field"><span>New value</span><input type={correctionField === "dob" ? "date" : "text"} disabled={!trackerEmployeeId || !user.permissions.edit} value={correctionValue} onChange={(event) => setCorrectionValue(event.target.value)} /></label>
+              </div>
+              <div className="form-actions"><button className="button primary" disabled={!user.permissions.edit || !trackerEmployeeId || !correctionValue.trim()} onClick={() => setShowCorrectionConfirmation(true)}><Users size={17} />Review and update</button></div>
+            </section>
+          </section>
+        )}
 
-        {workspace === "reports" && <section className="page-shell workspace-panel"><div className="workspace-heading"><p className="eyebrow">Client reporting</p><h1>Claims reports</h1><p>Generate a CSV from the Raha database or directly from the TPA configured on the selected policy.</p></div><section className="add-panel tracker-form"><div className="form-grid"><label className="name-field"><span>Client</span><select value={trackerCompanyId} onChange={(event) => { setTrackerCompanyId(event.target.value); setReportPolicyId(""); }}><option value="">Select client</option>{clients.map((client) => <option key={client._id} value={client._id}>{client.company_name}</option>)}</select></label><label className="name-field"><span>Source</span><select value={reportSource} onChange={(event) => setReportSource(event.target.value)}><option value="database">Raha database</option><option value="tpa">Direct from policy TPA</option></select></label><label className="name-field form-span"><span>Policy / TPA</span><select value={reportPolicyId} onChange={(event) => setReportPolicyId(event.target.value)} disabled={!trackerCompanyId}><option value="">Select policy</option>{trackerPolicies.map((policy) => <option key={policy._id} value={policy._id}>{policy.policy_number} · {policy.insurer_details?.tpa_name || "TPA not configured"}</option>)}</select></label></div>{selectedReportPolicy && <div className="policy-source-summary"><span>Selected provider</span><strong>{selectedReportPolicy.insurer_details?.tpa_name || "TPA not configured"}</strong><small>{reportSource === "tpa" ? "The report will request fresh claims from this TPA." : "The report will use claims stored in Raha."}</small></div>}<div className="form-actions"><button className="button primary" disabled={!trackerCompanyId || !reportPolicyId} onClick={downloadClaimsReport}><Download size={17} />Generate CSV</button></div></section></section>}
+        {workspace === "reports" && (
+          <section className="page-shell workspace-panel">
+            <div className="workspace-heading"><p className="eyebrow">Company reporting</p><h1>Claims reports</h1><p>Generate a CSV from the secondary Raha database or directly from the TPA configured on the selected policy.</p></div>
+            <section className="add-panel tracker-form">
+              <div className="form-grid">
+                <label className="name-field"><span>Company</span><select value={trackerCompanyId} onChange={(event) => { setTrackerCompanyId(event.target.value); setReportPolicyId(""); setPolicySearch(""); }}><option value="">Select company</option>{clients.map((client) => <option key={client._id} value={client._id}>{client.company_name}</option>)}</select></label>
+                <label className="name-field"><span>Source</span><select value={reportSource} onChange={(event) => setReportSource(event.target.value)}><option value="database">Secondary Raha database</option><option value="tpa">Direct from policy TPA</option></select></label>
+                <label className="name-field form-span"><span>Search policy</span><input disabled={!trackerCompanyId} value={policySearch} onChange={(event) => { setPolicySearch(event.target.value); setReportPolicyId(""); }} placeholder="Policy number, type, or TPA name" /></label>
+                <label className="name-field form-span"><span>Policy / TPA</span><select value={reportPolicyId} onChange={(event) => setReportPolicyId(event.target.value)} disabled={!trackerCompanyId}><option value="">Select policy</option>{trackerPolicies.map((policy) => <option key={policy._id} value={policy._id}>{policy.policy_number} · {policy.insurer_details?.tpa_name || "TPA not configured"}</option>)}</select></label>
+              </div>
+              {selectedReportPolicy && <div className="policy-source-summary"><span>Selected provider</span><strong>{selectedReportPolicy.insurer_details?.tpa_name || "TPA not configured"}</strong><small>{reportSource === "tpa" ? "The report will request fresh claims from this TPA." : "The report will use claims stored in the secondary Raha database."}</small></div>}
+              <div className="form-actions"><button className="button primary" disabled={!trackerCompanyId || !reportPolicyId} onClick={downloadClaimsReport}><Download size={17} />Generate CSV</button></div>
+            </section>
+          </section>
+        )}
         </div>
       </div>
 
@@ -699,29 +896,27 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedTpa(null); }}>
           <section className="details-modal" role="dialog" aria-modal="true" aria-labelledby="tpa-details-title">
             <div className="panel-heading details-heading">
-                  <div><p className="eyebrow">TPA details</p><h2 id="tpa-details-title">{selectedTpa.name}</h2><p>Complete UAT and Production service overview.</p>{selectedTpa.aliases.length > 0 && <div className="alias-list"><strong>Accepted names</strong><span>{selectedTpa.aliases.join(" · ")}</span></div>}</div>
+                  <div><p className="eyebrow">TPA details</p><h2 id="tpa-details-title">{selectedTpa.name}</h2><p>Complete production service overview.</p>{selectedTpa.aliases.length > 0 && <div className="alias-list"><strong>Accepted names</strong><span>{selectedTpa.aliases.join(" · ")}</span></div>}</div>
               <button className="icon-button" onClick={() => setSelectedTpa(null)} aria-label="Close details"><X size={20} /></button>
             </div>
-            <div className="environment-details-grid">
-              {(["uat", "prod"] as EnvironmentKey[]).map((env) => (
-                <article className="environment-detail" key={env}>
-                  <div className="environment-detail-title"><strong>{env === "uat" ? "UAT" : "Production"}</strong><span>{SERVICES.filter(({ key }) => selectedTpa.environments[env][key] === true).length} working</span></div>
+            <div className="environment-details-grid production-only">
+                <article className="environment-detail">
+                  <div className="environment-detail-title"><strong>Production</strong><span>{SERVICES.filter(({ key }) => selectedTpa.environments.prod[key] === true).length} working</span></div>
                   <div className="detail-services">
                     {SERVICES.map(({ key, label }) => {
-                      const value = selectedTpa.environments[env][key];
+                      const value = selectedTpa.environments.prod[key];
                       return <div key={key}><span>{label}</span><b className={value === null ? "detail-state untracked" : value ? "detail-state working" : "detail-state offline"}>{value === null ? <CircleMinus size={14} /> : value ? <Check size={14} /> : <X size={14} />}{value === null ? "Not tracked" : value ? "Working" : "Not working"}</b></div>;
                     })}
                   </div>
-                  <label className="review-field"><span>{env.toUpperCase()} review</span><textarea disabled={!user.permissions.edit} value={reviewDrafts[env]} onChange={(event) => setReviewDrafts((current) => ({ ...current, [env]: event.target.value }))} placeholder="No review added." /></label>
-                  {user.permissions.edit && <button className="button secondary save-review" onClick={() => saveReview(env)}>Save {env.toUpperCase()} review</button>}
+                  <label className="review-field"><span>Production review</span><textarea disabled={!user.permissions.edit} value={reviewDraft} onChange={(event) => setReviewDraft(event.target.value)} placeholder="No review added." /></label>
+                  {user.permissions.edit && <button className="button secondary save-review" onClick={saveReview}>Save production review</button>}
                 </article>
-              ))}
             </div>
           </section>
         </div>
       )}
       {showCorrectionConfirmation && <div className="modal-backdrop" role="presentation"><section className="confirmation-modal" role="dialog" aria-modal="true"><p className="eyebrow">Confirm change</p><h2>Are you sure?</h2><p>Update <b>{correctionField.replace("_", " ")}</b> to <b>{correctionValue}</b> for <b>{selectedTrackerEmployee?.user_first_name || "this employee"}</b>? The change will be recorded in the audit trail.</p><div className="form-actions"><button className="button ghost" onClick={() => setShowCorrectionConfirmation(false)}>Cancel</button><button className="button primary" onClick={submitEmployeeCorrection}>I agree, update</button></div></section></div>}
-      {selectedAlert && (() => { const responses = getFailureResponses(selectedAlert); return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedAlert(null); }}><section className="details-modal failure-details-modal" role="dialog" aria-modal="true"><div className="panel-heading"><div><p className="eyebrow">TPA failure event</p><h2>{selectedAlert.tpa_name} · {selectedAlert.service_label ?? selectedAlert.service_type}</h2><p>{selectedAlert.message}</p></div><button className="icon-button" onClick={() => setSelectedAlert(null)} aria-label="Close failure details"><X size={20} /></button></div><div className="failure-meta"><span>Endpoint: {selectedAlert.api_endpoint || "-"}</span><span>Time: {new Date(selectedAlert.failed_at ?? selectedAlert.createdAt ?? Date.now()).toLocaleString("en-IN")}</span></div><div className="failure-payloads"><section><h3>Raha request</h3><pre>{JSON.stringify(selectedAlert.request_payload ?? {}, null, 2)}</pre></section><section><h3>Raha API response</h3><pre>{JSON.stringify(responses.rahaResponse, null, 2)}</pre></section><section className="tpa-response-panel"><h3>TPA response / error</h3><pre>{JSON.stringify(responses.tpaResponse, null, 2)}</pre></section></div></section></div>; })()}
+      {selectedAlert && (() => { const responses = getFailureResponses(selectedAlert); return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedAlert(null); }}><section className="details-modal failure-details-modal" role="dialog" aria-modal="true"><div className="panel-heading"><div><p className="eyebrow">TPA failure event</p><h2>{selectedAlert.tpa_name} · {selectedAlert.service_label ?? selectedAlert.service_type}</h2><p>{selectedAlert.message}</p></div><button className="icon-button" onClick={() => setSelectedAlert(null)} aria-label="Close failure details"><X size={20} /></button></div><div className="failure-meta"><span>Endpoint: {selectedAlert.api_endpoint || "-"}</span><span>Time: {formatAlertDate(selectedAlert)}</span></div><div className="failure-payloads"><section><h3>Raha request</h3><pre>{JSON.stringify(selectedAlert.request_payload ?? {}, null, 2)}</pre></section><section><h3>Raha API response</h3><pre>{JSON.stringify(responses.rahaResponse, null, 2)}</pre></section><section className="tpa-response-panel"><h3>TPA response / error</h3><pre>{JSON.stringify(responses.tpaResponse, null, 2)}</pre></section></div></section></div>; })()}
     </main>
   );
 }
