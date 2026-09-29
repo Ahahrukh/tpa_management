@@ -35,6 +35,24 @@ export type ServiceFailure = {
   reportedAt: string;
 };
 
+export type ReportTestApiKey = ServiceKey | "authApi";
+
+export type TpaReport = {
+  id: string;
+  tpaId: string | null;
+  tpaName: string;
+  serviceName: ReportTestApiKey;
+  serviceLabel: string;
+  environment: EnvironmentKey;
+  testedOn: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  fileUrl: string | null;
+  uploadedBy: string;
+  uploadedAt: string;
+};
+
 export type UserPermissions = {
   add: boolean;
   edit: boolean;
@@ -57,4 +75,10 @@ export const SERVICES: { key: ServiceKey; label: string; shortLabel: string }[] 
   { key: "claimSubmission", label: "Claim Submission", shortLabel: "Submission" },
   { key: "activeListEnrollment", label: "Active List / Enrollment", shortLabel: "Enrollment" },
   { key: "blacklistedHospitals", label: "Blacklisted Hospitals", shortLabel: "Blacklist" },
+];
+
+// Report evidence covers Auth API too, which is not a tracked service in the matrix.
+export const REPORT_TEST_APIS: { key: ReportTestApiKey; label: string }[] = [
+  ...SERVICES.map(({ key, label }) => ({ key: key as ReportTestApiKey, label })),
+  { key: "authApi", label: "Auth API" },
 ];

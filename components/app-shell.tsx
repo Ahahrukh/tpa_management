@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, LockKeyhole, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole } from "lucide-react";
 import Dashboard from "./dashboard";
 import type { AuthUser } from "@/lib/types";
 
@@ -56,7 +56,7 @@ export default function AppShell() {
   return (
     <main className="login-page">
       <section className="login-card">
-        <div className="login-brand"><span className="brand-mark"><ShieldCheck size={22} /></span><span>TPA <b>Pulse</b></span></div>
+        <div className="login-brand"><span className="brand-logo">Raha</span><span className="brand-divider" /><span className="brand-sub">TPA Tracker</span></div>
         <div className="login-icon"><LockKeyhole size={24} /></div>
         <p className="eyebrow">Secure workspace</p>
         <h1>Welcome back</h1>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -11,17 +11,18 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
+  FileUp,
   LogOut,
   Plus,
   PencilLine,
   Search,
-  ShieldCheck,
   Trash2,
+  UploadCloud,
   UserRoundCog,
   Users,
   X,
 } from "lucide-react";
-import { SERVICES, type AuthUser, type ServiceKey, type Tpa, type UserPermissions } from "@/lib/types";
+import { REPORT_TEST_APIS, SERVICES, type AuthUser, type EnvironmentKey, type ReportTestApiKey, type ServiceKey, type Tpa, type TpaReport, type UserPermissions } from "@/lib/types";
 
 const RAHA_BACKEND_URL = process.env.NEXT_PUBLIC_RAHA_BACKEND_URL ?? "https://prodbackend.rahainsure.com";
 const ENVIRONMENT = "prod" as const;
@@ -125,6 +126,19 @@ function toDateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function formatReportDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function getPaginationItems(currentPage: number, totalPages: number) {
   if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
 
@@ -155,7 +169,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   const [managedUsers, setManagedUsers] = useState<AuthUser[]>([]);
   const [selectedTpa, setSelectedTpa] = useState<Tpa | null>(null);
   const [reviewDraft, setReviewDraft] = useState("");
-  const [workspace, setWorkspace] = useState<"services" | "failures" | "corrections" | "reports">("services");
+  const [workspace, setWorkspace] = useState<"services" | "failures" | "corrections" | "reports" | "tpaReports">("services");
   const [clients, setClients] = useState<{ _id: string; company_name: string }[]>([]);
   const [trackerCompanyId, setTrackerCompanyId] = useState("");
   const [trackerModel, setTrackerModel] = useState("onboarding");
@@ -180,6 +194,18 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     return toDateInputValue(date);
   });
   const [failureEndDate, setFailureEndDate] = useState(() => toDateInputValue(new Date()));
+  const [reports, setReports] = useState<TpaReport[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(true);
+  const loadedOnce = useRef({ alerts: false, clients: false, reports: false });
+  const [reportTpaName, setReportTpaName] = useState("");
+  const [reportTestedOn, setReportTestedOn] = useState(() => toDateInputValue(new Date()));
+  const [reportServiceName, setReportServiceName] = useState<ReportTestApiKey>(REPORT_TEST_APIS[0].key);
+  const [reportEnvironment, setReportEnvironment] = useState<EnvironmentKey>("prod");
+  const [reportFile, setReportFile] = useState<File | null>(null);
+  const [reportFileKey, setReportFileKey] = useState(0);
+  const [uploadingReport, setUploadingReport] = useState(false);
+  const [reportNotice, setReportNotice] = useState("");
+  const [reportPage, setReportPage] = useState(1);
 
   async function persistFailureStatus(alert: TpaRealtimeAlert) {
     const serviceKey = getTrackerServiceKey(alert.service_type);
@@ -229,6 +255,9 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   }, []);
 
   useEffect(() => {
+    if (workspace !== "corrections" && workspace !== "reports") return;
+    if (loadedOnce.current.clients) return;
+    loadedOnce.current.clients = true;
     fetch("/api/tracker/clients", { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
@@ -237,7 +266,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
       })
       .then((data) => setClients(Array.isArray(data?.data) ? data.data : []))
       .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not load clients from Raha backend."));
-  }, []);
+  }, [workspace]);
 
   useEffect(() => {
     if (!trackerCompanyId || workspace !== "reports") return;
@@ -254,6 +283,21 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     }, 300);
     return () => window.clearTimeout(timer);
   }, [policySearch, trackerCompanyId, workspace]);
+
+  useEffect(() => {
+    if (workspace !== "tpaReports") return;
+    if (loadedOnce.current.reports) return;
+    loadedOnce.current.reports = true;
+    fetch("/api/tpa-reports", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Could not load the TPA report history.");
+        return data;
+      })
+      .then((data) => setReports(Array.isArray(data) ? data : []))
+      .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Could not load the TPA report history."))
+      .finally(() => setReportsLoading(false));
+  }, [workspace]);
 
   useEffect(() => {
     if (!trackerCompanyId || workspace !== "corrections") return;
@@ -316,6 +360,11 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     Math.min(alertPage, alertTotalPages) * alertPageSize,
   );
   const invalidFailureDateRange = failureDateMode === "custom" && Boolean(failureStartDate && failureEndDate && failureStartDate > failureEndDate);
+  const reportTpaOptions = tpas.filter((tpa) => tpa.activeEnvironments[reportEnvironment]);
+  const reportPageSize = 5;
+  const reportTotalPages = Math.max(1, Math.ceil(reports.length / reportPageSize));
+  const currentReportPage = Math.min(reportPage, reportTotalPages);
+  const visibleReports = reports.slice((currentReportPage - 1) * reportPageSize, currentReportPage * reportPageSize);
 
   function resetFailurePages() {
     setFailurePage(1);
@@ -337,7 +386,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
         .then((data) => setTpas(data))
         .catch(() => undefined);
     };
-    const interval = window.setInterval(refresh, 10_000);
+    const interval = window.setInterval(refresh, 60_000);
     window.addEventListener("focus", refresh);
     return () => {
       window.clearInterval(interval);
@@ -346,24 +395,36 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
   }, []);
 
   useEffect(() => {
+    if (workspace !== "services" && workspace !== "failures") return;
+    if (loadedOnce.current.alerts) return;
+    loadedOnce.current.alerts = true;
     let active = true;
     fetch(`${RAHA_BACKEND_URL}/api/v2/raha_user_master/tpa_failure_alerts?perPage=500`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : Promise.reject()))
       .then((data) => {
         const existingAlerts = Array.isArray(data?.data) ? data.data : [];
-        if (active) {
-          setAlerts(existingAlerts);
-          // The tracker may open after a TPA failure. Synchronize persisted
-          // alerts as well as live socket events.
-          existingAlerts.forEach((alert: TpaRealtimeAlert) => {
-            void persistFailureStatus(alert).catch((caught: unknown) =>
-              setError(caught instanceof Error ? caught.message : "Could not synchronize TPA failure status."),
-            );
-          });
-        }
+        if (!active) return;
+        setAlerts(existingAlerts);
+        // Hundreds of alerts collapse to a handful of TPA/service pairs, and the
+        // matrix only stores the latest state per pair — so sync each pair once.
+        const syncedPairs = new Set<string>();
+        existingAlerts.forEach((alert: TpaRealtimeAlert) => {
+          const pair = `${normalizeTpaName(alert.tpa_name)}|${alert.service_type}`;
+          if (syncedPairs.has(pair)) return;
+          syncedPairs.add(pair);
+          void persistFailureStatus(alert).catch((caught: unknown) =>
+            setError(caught instanceof Error ? caught.message : "Could not synchronize TPA failure status."),
+          );
+        });
       })
       .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [workspace]);
 
+  useEffect(() => {
+    let active = true;
     let disconnectSocket: (() => void) | undefined;
     import("socket.io-client")
       .then(({ io }) => {
@@ -587,6 +648,37 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     URL.revokeObjectURL(link.href);
   }
 
+  async function uploadTpaReport(event: React.FormEvent) {
+    event.preventDefault();
+    if (!reportTpaName || !reportFile) return setError("Select a TPA and attach a file.");
+    setError("");
+    setReportNotice("");
+    setUploadingReport(true);
+
+    const payload = new FormData();
+    payload.append("tpaName", reportTpaName);
+    payload.append("tpaId", tpas.find((tpa) => tpa.name === reportTpaName)?.id ?? "");
+    payload.append("testedOn", reportTestedOn);
+    payload.append("serviceName", reportServiceName);
+    payload.append("environment", reportEnvironment);
+    payload.append("file", reportFile);
+
+    try {
+      const response = await fetch("/api/tpa-reports", { method: "POST", body: payload });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Could not upload the file.");
+      setReports((current) => [data as TpaReport, ...current]);
+      setReportNotice(`${(data as TpaReport).fileName} uploaded for ${(data as TpaReport).tpaName}.`);
+      setReportFile(null);
+      setReportFileKey((current) => current + 1);
+      setReportPage(1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not upload the file.");
+    } finally {
+      setUploadingReport(false);
+    }
+  }
+
   function renderFailureFilters() {
     return (
       <div className="failure-filters">
@@ -651,8 +743,9 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
     <main>
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark"><ShieldCheck size={20} strokeWidth={2.2} /></span>
-          <span>RAHA <b>TPA-TRACKER</b></span>
+          <span className="brand-logo">Raha</span>
+          <span className="brand-divider" />
+          <span className="brand-sub">TPA Tracker</span>
         </div>
         <div className="account-actions">
           <div className="account-copy"><strong>{user.username}</strong><small>{user.role === "admin" ? "Administrator" : "User"}</small></div>
@@ -663,7 +756,7 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
       <div className="tracker-layout">
         <aside className="tracker-sidebar" aria-label="TPA tracker navigation">
           <p>Workspace</p>
-          {[["services", "TPA status", Activity], ["failures", "TPA failures", AlertTriangle], ["corrections", "Employee edit", PencilLine], ["reports", "Claims reports", FileSpreadsheet]].map(([key, label, Icon]) => {
+          {[["services", "TPA status", Activity], ["failures", "TPA failures", AlertTriangle], ["corrections", "Employee edit", PencilLine], ["reports", "Claims reports", FileSpreadsheet], ["tpaReports", "TPA reports", FileUp]].map(([key, label, Icon]) => {
             const NavIcon = Icon as typeof Activity;
             return <button key={key as string} className={workspace === key ? "active" : ""} onClick={() => setWorkspace(key as typeof workspace)}><NavIcon size={17} />{label as string}</button>;
           })}
@@ -886,6 +979,76 @@ export default function Dashboard({ user, onLogout }: { user: AuthUser; onLogout
               </div>
               {selectedReportPolicy && <div className="policy-source-summary"><span>Selected provider</span><strong>{selectedReportPolicy.insurer_details?.tpa_name || "TPA not configured"}</strong><small>{reportSource === "tpa" ? "The report will request fresh claims from this TPA." : "The report will use claims stored in the secondary Raha database."}</small></div>}
               <div className="form-actions"><button className="button primary" disabled={!trackerCompanyId || !reportPolicyId} onClick={downloadClaimsReport}><Download size={17} />Generate CSV</button></div>
+            </section>
+          </section>
+        )}
+
+        {workspace === "tpaReports" && (
+          <section className="page-shell workspace-panel">
+            <div className="workspace-heading"><p className="eyebrow">Test evidence</p><h1>TPA reports</h1><p>Upload the file used to test a TPA API. Every upload is recorded below with the TPA, the API tested, and the test date.</p></div>
+
+            {error && <div className="error-banner"><X size={16} /> {error}</div>}
+            {reportNotice && <div className="upload-notice"><Check size={16} /> {reportNotice}</div>}
+
+            <form className="add-panel tracker-form" onSubmit={uploadTpaReport}>
+              <div className="form-grid">
+                <label className="name-field"><span>Environment</span><select value={reportEnvironment} onChange={(event) => { setReportEnvironment(event.target.value as EnvironmentKey); setReportTpaName(""); }}><option value="prod">Production</option><option value="uat">UAT</option></select></label>
+                <label className="name-field"><span>TPA name</span><select value={reportTpaName} onChange={(event) => setReportTpaName(event.target.value)}><option value="">Select TPA</option>{reportTpaOptions.map((tpa) => <option key={tpa.id} value={tpa.name}>{tpa.name}</option>)}</select></label>
+                <label className="name-field"><span>Testing API name</span><select value={reportServiceName} onChange={(event) => setReportServiceName(event.target.value as ReportTestApiKey)}>{REPORT_TEST_APIS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}</select></label>
+                <label className="name-field"><span>Date</span><input type="date" value={reportTestedOn} onChange={(event) => setReportTestedOn(event.target.value)} /></label>
+                <label className="name-field form-span file-field">
+                  <span>File</span>
+                  <input key={reportFileKey} type="file" onChange={(event) => setReportFile(event.target.files?.[0] ?? null)} />
+                  <small>{reportFile ? `${formatFileSize(reportFile.size)} · ${reportFile.type || "unknown type"}` : "PDF, CSV, or any test evidence file up to 25 MB"}</small>
+                </label>
+              </div>
+              <div className="form-actions upload-actions"><button className="button primary" type="submit" disabled={!user.permissions.add || !reportTpaName || !reportFile || uploadingReport}><UploadCloud size={17} />{uploadingReport ? "Uploading…" : "Upload file"}</button></div>
+            </form>
+
+            <section className="failure-table">
+              <div className="failure-table-head">
+                <div><strong>{reportsLoading ? "—" : reports.length}</strong><span>uploaded reports</span></div>
+                <span className="live-pill connected">{RAHA_BACKEND_URL.replace(/^https?:\/\//, "")}</span>
+              </div>
+              {reportsLoading ? (
+                <div className="empty-state"><div className="spinner" /><p>Loading uploaded reports…</p></div>
+              ) : reports.length ? (
+                <>
+                  <div className="failure-table-scroll">
+                    <table>
+                      <thead><tr><th>TPA</th><th>Environment</th><th>Testing API</th><th>Date</th><th>File</th><th>Uploaded by</th><th>Uploaded at</th></tr></thead>
+                      <tbody>
+                        {visibleReports.map((report) => (
+                          <tr key={report.id}>
+                            <td><strong>{report.tpaName}</strong></td>
+                            <td><span className={report.environment === "prod" ? "env-chip prod" : "env-chip uat"}>{report.environment === "prod" ? "Production" : "UAT"}</span></td>
+                            <td><span className="service-chip">{report.serviceLabel}</span></td>
+                            <td className="nowrap-cell">{formatReportDate(report.testedOn)}</td>
+                            <td>
+                              <div className="report-file-cell">
+                                {report.fileUrl
+                                  ? <a className="report-file-link" href={report.fileUrl} target="_blank" rel="noreferrer" title={report.fileName}>{report.fileName}</a>
+                                  : <span className="report-file-link as-text" title={report.fileName}>{report.fileName}</span>}
+                                <small className="report-file-meta">{formatFileSize(report.fileSize)}</small>
+                              </div>
+                            </td>
+                            <td className="nowrap-cell">{report.uploadedBy}</td>
+                            <td className="nowrap-cell">{new Date(report.uploadedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {reports.length > reportPageSize && (
+                    <nav className="pagination" aria-label="TPA report pagination">
+                      <p>Showing {(currentReportPage - 1) * reportPageSize + 1}–{Math.min(currentReportPage * reportPageSize, reports.length)} of {reports.length}</p>
+                      {renderNumberedPagination(currentReportPage, reportTotalPages, setReportPage)}
+                    </nav>
+                  )}
+                </>
+              ) : (
+                <div className="alert-empty">No reports uploaded yet.</div>
+              )}
             </section>
           </section>
         )}

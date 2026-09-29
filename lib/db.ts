@@ -1,5 +1,5 @@
 import { Db, MongoClient, ObjectId, type Collection } from "mongodb";
-import type { EnvironmentKey, ServiceFailure, ServiceKey, ServiceValue, Tpa, TpaEnvironment, UserPermissions } from "./types";
+import { REPORT_TEST_APIS, type EnvironmentKey, type ReportTestApiKey, type ServiceFailure, type ServiceKey, type ServiceValue, type Tpa, type TpaEnvironment, type TpaReport, type UserPermissions } from "./types";
 
 export type TpaDocument = {
   _id?: ObjectId;
@@ -30,6 +30,24 @@ export type ServiceEventDocument = {
   reason?: string;
   occurredAt: Date;
   reportedAt: Date;
+};
+
+export type TpaReportDocument = {
+  _id?: ObjectId;
+  tpaId: ObjectId | null;
+  tpaName: string;
+  serviceName: ReportTestApiKey;
+  environment: EnvironmentKey;
+  testedOn: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  fileUrl: string | null;
+  upstreamStatus: number;
+  upstreamResponse: unknown;
+  uploadedById: ObjectId;
+  uploadedBy: string;
+  uploadedAt: Date;
 };
 
 export type UserDocument = {
@@ -75,6 +93,7 @@ export async function getDatabase(): Promise<Db> {
     database.collection<ServiceEventDocument>("serviceEvents").createIndex({ tpaId: 1, occurredAt: -1 }),
     database.collection<ServiceEventDocument>("serviceEvents").createIndex({ occurredAt: -1 }),
     database.collection<UserDocument>("users").createIndex({ normalizedUsername: 1 }, { unique: true }),
+    database.collection<TpaReportDocument>("tpaReports").createIndex({ uploadedAt: -1 }),
   ]).then(() => undefined);
   await cache.initialized;
   return database;
@@ -90,6 +109,28 @@ export async function getServiceEventCollection(): Promise<Collection<ServiceEve
 
 export async function getUserCollection(): Promise<Collection<UserDocument>> {
   return (await getDatabase()).collection<UserDocument>("users");
+}
+
+export async function getTpaReportCollection(): Promise<Collection<TpaReportDocument>> {
+  return (await getDatabase()).collection<TpaReportDocument>("tpaReports");
+}
+
+export function toTpaReport(document: TpaReportDocument & { _id: ObjectId }): TpaReport {
+  return {
+    id: document._id.toHexString(),
+    tpaId: document.tpaId?.toHexString() ?? null,
+    tpaName: document.tpaName,
+    serviceName: document.serviceName,
+    serviceLabel: REPORT_TEST_APIS.find(({ key }) => key === document.serviceName)?.label ?? document.serviceName,
+    environment: document.environment,
+    testedOn: document.testedOn,
+    fileName: document.fileName,
+    fileSize: document.fileSize,
+    fileType: document.fileType,
+    fileUrl: document.fileUrl,
+    uploadedBy: document.uploadedBy,
+    uploadedAt: document.uploadedAt.toISOString(),
+  };
 }
 
 export function toTpa(document: TpaDocument & { _id: ObjectId }): Tpa {
